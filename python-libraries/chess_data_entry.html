@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Chess Game Annotation</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1rem; color: #222; }
+  h1 { margin-bottom: 0.25rem; }
+  p.note { color: #555; margin-top: 0; }
+  form { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem 1.5rem; }
+  label { display: flex; flex-direction: column; font-weight: 600; font-size: 0.9rem; }
+  input, select, textarea { font: inherit; font-weight: 400; padding: 0.4rem; margin-top: 0.25rem; border: 1px solid #aaa; border-radius: 4px; }
+  textarea { min-height: 3rem; }
+  .full { grid-column: 1 / -1; }
+  .error { color: #b00020; font-weight: 400; font-size: 0.8rem; min-height: 1em; }
+  button { font: inherit; padding: 0.5rem 1rem; cursor: pointer; }
+  #review { margin-top: 1.5rem; border: 2px solid #333; padding: 1rem; display: none; }
+  table { border-collapse: collapse; width: 100%; margin-top: 1rem; font-size: 0.85rem; }
+  th, td { border: 1px solid #ccc; padding: 0.3rem; text-align: left; vertical-align: top; }
+  th { background: #f0f0f0; }
+  #status { color: #1b5e20; margin-top: 0.5rem; }
+</style>
+</head>
+<body>
+
+<h1>Chess Game Annotation</h1>
+<p class="note">Same fields and rules as <code>cli_data_entry.py</code>. Every field is required. Type <em>unknown</em> if you genuinely don't know.</p>
+
+<form id="game-form" novalidate>
+  <label>date
+    <input type="date" name="date">
+    <span class="error" data-for="date"></span>
+  </label>
+  <label>color
+    <select name="color"><option value="">-- choose --</option><option>white</option><option>black</option></select>
+    <span class="error" data-for="color"></span>
+  </label>
+  <label>time_control (minutes+increment)
+    <input type="text" name="time_control" placeholder="10+0">
+    <span class="error" data-for="time_control"></span>
+  </label>
+  <label>result
+    <select name="result"><option value="">-- choose --</option><option>win</option><option>loss</option><option>draw</option></select>
+    <span class="error" data-for="result"></span>
+  </label>
+  <label>end_reason
+    <select name="end_reason">
+      <option value="">-- choose --</option><option>checkmate</option><option>resigned</option><option>timeout</option>
+      <option>draw agreed</option><option>stalemate</option><option>repetition</option><option>abandoned</option><option>other</option>
+    </select>
+    <span class="error" data-for="end_reason"></span>
+  </label>
+  <label>opening
+    <input type="text" name="opening" placeholder="Caro-Kann">
+    <span class="error" data-for="opening"></span>
+  </label>
+  <label class="full">critical_moment
+    <input type="text" name="critical_moment" placeholder="move 23, took the pawn">
+    <span class="error" data-for="critical_moment"></span>
+  </label>
+  <label class="full">why
+    <textarea name="why" placeholder="thought it was free, missed Bg5"></textarea>
+    <span class="error" data-for="why"></span>
+  </label>
+  <label>time_pressure
+    <select name="time_pressure"><option value="">-- choose --</option><option>yes</option><option>no</option><option>unknown</option></select>
+    <span class="error" data-for="time_pressure"></span>
+  </label>
+  <label>emotional_state
+    <input type="text" name="emotional_state" placeholder="tilted, calm, anxious...">
+    <span class="error" data-for="emotional_state"></span>
+  </label>
+  <label>understood_position
+    <select name="understood_position"><option value="">-- choose --</option><option>yes</option><option>partly</option><option>no</option><option>unknown</option></select>
+    <span class="error" data-for="understood_position"></span>
+  </label>
+  <div class="full"><button type="submit">Review entry</button></div>
+</form>
+
+<div id="review">
+  <strong>Is this correct?</strong>
+  <table><tbody id="review-body"></tbody></table>
+  <p>
+    <button id="confirm-yes">Yes, save it</button>
+    <button id="confirm-no">No, edit it</button>
+  </p>
+</div>
+
+<h2>Saved games (<span id="count">0</span>)</h2>
+<table>
+  <thead id="saved-head"></thead>
+  <tbody id="saved-body"></tbody>
+</table>
+<p><button id="download">Download CSV</button></p>
+<p id="status"></p>
+
+<script>
+const FIELDS = ["date", "color", "time_control", "result", "end_reason", "opening",
+  "critical_moment", "why", "time_pressure", "emotional_state", "understood_position"];
+
+const games = [];
+let pending = null;
+
+const form = document.getElementById("game-form");
+const review = document.getElementById("review");
+
+// Header row for the saved-games table, built from FIELDS like the CLI's Rich table.
+document.getElementById("saved-head").innerHTML =
+  "<tr>" + FIELDS.map(f => `<th>${f}</th>`).join("") + "</tr>";
+
+function validate(field, value) {
+  if (!value) return "Required. Type 'unknown' if you genuinely don't know.";
+  if (field === "date") {
+    const today = new Date().toISOString().slice(0, 10);
+    if (value > today) return "Date can't be in the future.";
+  }
+  if (field === "time_control" && !/^\d+\+\d+$/.test(value)) {
+    return "Use minutes+increment, e.g. 10+0 or 5+3.";
+  }
+  return null;
+}
+
+function escapeHtml(s) {
+  return s.replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+form.addEventListener("submit", e => {
+  e.preventDefault();
+  const entry = {};
+  let ok = true;
+  for (const field of FIELDS) {
+    const value = form.elements[field].value.trim();
+    const error = validate(field, value);
+    document.querySelector(`.error[data-for="${field}"]`).textContent = error || "";
+    if (error) ok = false;
+    entry[field] = value;
+  }
+  if (!ok) return;
+
+  pending = entry;
+  document.getElementById("review-body").innerHTML = FIELDS
+    .map(f => `<tr><th>${f}</th><td>${escapeHtml(entry[f])}</td></tr>`).join("");
+  review.style.display = "block";
+});
+
+document.getElementById("confirm-no").addEventListener("click", () => {
+  review.style.display = "none";
+  pending = null;
+});
+
+document.getElementById("confirm-yes").addEventListener("click", () => {
+  games.push(pending);
+  const row = "<tr>" + FIELDS.map(f => `<td>${escapeHtml(pending[f])}</td>`).join("") + "</tr>";
+  document.getElementById("saved-body").insertAdjacentHTML("beforeend", row);
+  document.getElementById("count").textContent = games.length;
+  pending = null;
+  review.style.display = "none";
+  form.reset();
+  document.getElementById("status").textContent = "Saved. Enter another game or download the CSV.";
+});
+
+document.getElementById("download").addEventListener("click", () => {
+  if (games.length === 0) {
+    document.getElementById("status").textContent = "No games saved yet.";
+    return;
+  }
+  const quote = v => `"${v.replace(/"/g, '""')}"`;
+  const lines = [FIELDS.join(","), ...games.map(g => FIELDS.map(f => quote(g[f])).join(","))];
+  const blob = new Blob([lines.join("\n") + "\n"], { type: "text/csv" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "chess_games_html.csv";
+  a.click();
+  URL.revokeObjectURL(a.href);
+});
+</script>
+</body>
+</html>
